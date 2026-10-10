@@ -1,0 +1,1303 @@
+
+<body style="background:white;margin:0px;display:grid;width:100%;height:100%;grid-template-rows:auto 1fr">
+    <div id="top_d" style=""></div>
+    <div id="bottom_d" style="width:100%;height:100%;overflow:scroll"></div>
+</body>
+<script>
+
+console.log('0.0.3')
+
+var tau = Math.PI * 2
+
+var view = {
+    x : -22,
+    y : 32,
+    scale : 2,
+    brush : 'wire',
+    speed : 0.2,
+    prev_x : 0,
+    prev_y : 0,
+    box : null
+}
+
+var things = {
+    and_gate : { on : [0, 0, 255], off : [0, 0, 128], big: true },
+    // and_gate : { on : [255, 0, 0], off : [128, 0, 0], big: true },
+    or_gate : { on : [255, 128, 0], off : [128, 64, 0], big: true },
+    nand_gate : { on : [255, 0, 255], off : [128, 0, 128], big: true },
+    wire : { on : [255, 255, 0], off : [80, 80, 0] },
+    cross_gate : { on : [0, 0, 0], off : [0, 0, 0] },
+    toggle : { on : [0, 255, 255], off : [0, 128, 128], big: true },
+    small_toggle : { on : [0, 255, 254], off : [0, 128, 127] }
+}
+
+var code_to_thing = {}
+Object.entries(things).forEach(([k, v], i) => {
+    v.code = i + 1
+    code_to_thing[v.code] = k
+})
+
+var dpr = window.devicePixelRatio
+
+var W = 1024
+var H = 1024
+
+var c = document.createElement('canvas')
+c.width = W
+c.height = H
+c.style.width = (W * view.scale)/devicePixelRatio + 'px'
+c.style.height = (H * view.scale)/devicePixelRatio + 'px'
+c.style['image-rendering'] = 'pixelated'
+bottom_d.append(c)
+window.onresize = () => {
+    let sd = bottom_d
+    sd.scrollLeft = (sd.scrollWidth - sd.clientWidth) / 2
+    sd.scrollTop = (sd.scrollHeight - sd.clientHeight) / 2    
+}
+window.onresize()
+
+var gl = c.getContext('webgl2')
+
+var vs = createShader(gl, gl.VERTEX_SHADER, `#version 300 es
+in vec4 a_position;
+void main() {
+    gl_Position = a_position;
+}
+`)
+
+var sss = `#version 300 es
+precision mediump float;
+
+uniform sampler2D u_image;
+uniform vec4 u_red_box;
+
+out vec4 outColor;
+
+float lerp(float t0, float v0, float t1, float v1, float t) {
+    return (t - t0) * (v1 - v0) / (t1 - t0) + v0;
+}
+
+void main() {
+    if ((int(gl_FragCoord.x) % 2 == 0) == (int(gl_FragCoord.y) % 2 == 0)) outColor = vec4(0.0, 32.0/255.0, 0.0, 1.0);
+    else outColor = vec4(0.0, 40.0/255.0, 0.0, 1.0);
+
+    float w = float(${W});
+    float h = float(${H});
+    for (int dy = 0; dy <= 2; dy++) {
+        for (int dx = -2; dx <= 0; dx++) {
+            float x = gl_FragCoord.x + float(dx);
+            float y = gl_FragCoord.y + float(dy);
+            vec4 t = texture(u_image, vec2(x/w, y/h));
+
+            ${Object.entries(things).map(([k, x], i) => `if (${!x.big ? 'dx == 0 && dy == 0 && ' : ''} abs(t.x - ${i + 1}.0/255.0) < 0.0001) outColor = t.y > 0.0 ? vec4(${x.on.map(x => (x/255).toFixed(3)).join(',')}, 1.0) : vec4(${x.off.map(x => (x/255).toFixed(3)).join(',')}, 1.0);`).join('\n')}
+
+            if (dx == 0 && dy == 0 && t.z > 0.0) outColor = t.y > 0.0 ? vec4(1.0, 1.0, 0.75, 1.0) : vec4(0.5, 0.5, 0.0, 1.0);
+        }
+    }
+
+    if (int(gl_FragCoord.x) >= int(u_red_box.x) &&
+        int(gl_FragCoord.y) >= int(u_red_box.y) &&
+        int(gl_FragCoord.x) <= int(u_red_box.z) &&
+        int(gl_FragCoord.y) <= int(u_red_box.w)) outColor.r = outColor.r + 0.5;
+}
+`
+
+var fs = createShader(gl, gl.FRAGMENT_SHADER, sss)
+
+var sss = `#version 300 es
+precision mediump float;
+
+uniform sampler2D u_image;
+uniform float iteration;
+
+out vec4 outColor;
+
+void main() {
+    float w = float(${W});
+    float h = float(${H});
+    float x = gl_FragCoord.x;
+    float y = gl_FragCoord.y;
+
+    vec4 tt = texture(u_image, vec2(x/w, y/h));
+    vec4 t;
+
+    if (tt.x == 0.0) {
+    } else if (abs(tt.x - ${things.wire.code.toFixed(1)}/255.0) < 0.0001 && tt.z > 0.0) {
+        tt.z = 0.0;
+    } else if (abs(tt.x - ${things.wire.code.toFixed(1)}/255.0) < 0.0001) {
+                
+        bool flip = false;
+
+        ${[[0, 1], [1, 0], [0, -1], [-1, 0]].map(x => `
+            t = texture(u_image, vec2((x + ${x[0].toFixed(1)})/w, (y + ${x[1].toFixed(1)})/h));
+            if (abs(t.x - ${things.wire.code.toFixed(1)}/255.0) < 0.0001 && (t.z > 0.0 || t.y == 0.0) && t.y != tt.y) {
+                flip = true;
+            } else if (abs(t.x - ${things.cross_gate.code.toFixed(1)}/255.0) < 0.0001) {
+                t = texture(u_image, vec2((x + 2.0*${x[0].toFixed(1)})/w, (y + 2.0*${x[1].toFixed(1)})/h));
+                if (abs(t.x - ${things.wire.code.toFixed(1)}/255.0) < 0.0001 && (t.z > 0.0 || t.y == 0.0) && t.y != tt.y) flip = true;
+            }
+        `).join('\n')}
+
+        ${[[-1, 3], [1, 1], [-1, -1], [-3, 1]].map(x => `
+            t = texture(u_image, vec2((x + ${x[0].toFixed(1)})/w, (y + ${x[1].toFixed(1)})/h));
+            if (t.w > 0.0 && t.y != tt.y) flip = true;
+        `).join('\n')}
+        ${[[0, 1], [1, 0], [0, -1], [-1, 0]].map(x => `
+            t = texture(u_image, vec2((x + ${x[0].toFixed(1)})/w, (y + ${x[1].toFixed(1)})/h));
+            if (abs(t.x - ${things.small_toggle.code.toFixed(1)}/255.0) < 0.0001 && t.y != tt.y) flip = true;
+        `).join('\n')}
+
+        if (flip) {
+            tt.y = tt.y > 0.0 ? 0.0 : 1.0;
+            tt.z = 1.0;
+        } else tt.z = 0.0;
+
+    } else if (abs(tt.x - ${things.cross_gate.code.toFixed(1)}/255.0) < 0.0001) {
+    } else if (abs(tt.x - ${things.toggle.code.toFixed(1)}/255.0) < 0.0001) {
+    } else if (abs(tt.x - ${things.small_toggle.code.toFixed(1)}/255.0) < 0.0001) {
+    } else {
+        int all_inputs = 0;
+        int on_inputs = 0;
+
+        ${[[0, 1], [2, 1], [3, 0], [3, -2], [0, -3], [2, -3], [-1, 0], [-1, -2]].map(x => `
+            t = texture(u_image, vec2((x + ${x[0].toFixed(1)})/w, (y + ${x[1].toFixed(1)})/h));
+            if (abs(t.x - ${things.wire.code.toFixed(1)}/255.0) < 0.0001) {
+                all_inputs++;
+                if (t.y > 0.0) on_inputs++;
+            }
+        `).join('\n')}
+
+        if (abs(tt.x - ${things.and_gate.code.toFixed(1)}/255.0) < 0.0001) {
+            tt.y = on_inputs == all_inputs ? 1.0 : 0.0;
+        } else if (abs(tt.x - ${things.or_gate.code.toFixed(1)}/255.0) < 0.0001) {
+            tt.y = on_inputs > 0 ? 1.0 : 0.0;
+        } else if (abs(tt.x - ${things.nand_gate.code.toFixed(1)}/255.0) < 0.0001) {
+            tt.y = on_inputs != all_inputs ? 1.0 : 0.0;
+        }
+    }
+    outColor = tt;
+}
+`
+
+var fs2 = createShader(gl, gl.FRAGMENT_SHADER, sss)
+
+var program = createProgram(gl, vs, fs)
+gl.useProgram(program)
+var a_position = gl.getAttribLocation(program, 'a_position')
+
+var positionBuffer = gl.createBuffer()
+
+var u_image = gl.getUniformLocation(program, 'u_image')
+gl.uniform1i(u_image, 0)
+
+var u_red_box = gl.getUniformLocation(program, 'u_red_box')
+
+gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer)
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+    -1, -1,
+    -1, 3,
+    3, -1,
+]), gl.STATIC_DRAW)
+
+gl.viewport(0, 0, gl.canvas.width, gl.canvas.height)
+gl.clearColor(0, 0, 0, 0)
+gl.clear(gl.COLOR_BUFFER_BIT)
+
+gl.enableVertexAttribArray(a_position)
+
+gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer)
+gl.vertexAttribPointer(a_position, 2, gl.FLOAT, false, 0, 0)
+
+
+
+
+
+var f = new Uint8Array(W * H * 4)
+
+var targetTexture = gl.createTexture()
+gl.activeTexture(gl.TEXTURE0)
+
+gl.bindTexture(gl.TEXTURE_2D, targetTexture)
+gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, W, H, 0, gl.RGBA, gl.UNSIGNED_BYTE, f)
+
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT)
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT)
+
+
+
+
+var program2 = createProgram(gl, vs, fs2)
+gl.useProgram(program2)
+
+var iteration_num = 0
+var iteration = gl.getUniformLocation(program2, 'iteration')
+
+
+var a_position = gl.getAttribLocation(program2, 'a_position')
+gl.enableVertexAttribArray(a_position)
+gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer)
+gl.vertexAttribPointer(a_position, 2, gl.FLOAT, false, 0, 0)
+
+gl.uniform1i(gl.getUniformLocation(program2, 'u_image'), 0);
+
+var targetTexture2 = gl.createTexture()
+//gl.activeTexture(gl.TEXTURE1)
+
+gl.bindTexture(gl.TEXTURE_2D, targetTexture2)
+gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, W, H, 0, gl.RGBA, gl.UNSIGNED_BYTE, null)
+
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT)
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT)
+
+
+
+var fb = gl.createFramebuffer()
+gl.bindFramebuffer(gl.FRAMEBUFFER, fb)
+gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, targetTexture2, 0)
+
+var fb2 = gl.createFramebuffer()
+gl.bindFramebuffer(gl.FRAMEBUFFER, fb2)
+gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, targetTexture, 0)
+
+var last_time = performance.now()
+var time_helper = 0
+
+var dirty = true
+
+loop()
+function loop() {
+    var cur_time = performance.now()
+    var dt = cur_time - last_time
+    last_time = cur_time
+
+    time_helper += dt
+    if (time_helper > 1000) time_helper = 1000
+    var time_per_step = view.speed == 0 ? Infinity : 1/view.speed
+    if (time_per_step == Infinity) time_helper = 0
+    while (time_helper > time_per_step) {
+        gl.bindTexture(gl.TEXTURE_2D, targetTexture)
+        
+        gl.bindFramebuffer(gl.FRAMEBUFFER, fb)
+        gl.useProgram(program2)
+        gl.uniform1f(iteration, iteration_num)
+        iteration_num++
+        
+        gl.drawArrays(gl.TRIANGLES, 0, 3)
+        
+        var save = targetTexture
+        targetTexture = targetTexture2
+        targetTexture2 = save
+        
+        var save = fb
+        fb = fb2
+        fb2 = save
+
+        time_helper -= time_per_step
+
+        dirty = true
+    }
+
+    if (dirty) {
+        dirty = false
+        gl.bindTexture(gl.TEXTURE_2D, targetTexture)
+        
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+        gl.useProgram(program)
+
+        if (view.brush == 'box' && view.box) gl.uniform4f(u_red_box, view.box[0], view.box[1], view.box[2] ?? view.box[0], view.box[3] ?? view.box[1])
+        else gl.uniform4f(u_red_box, 0, 0, -1, -1)
+
+        gl.drawArrays(gl.TRIANGLES, 0, 3)
+    }
+
+    window.requestAnimationFrame(loop)
+}
+
+function each(x, cb) {
+    Object.entries(x).forEach(([k, v]) => cb(v, k))
+}
+
+function set_zoom(new_zoom) {
+    var sd = bottom_d
+    var x = (sd.scrollLeft + sd.clientWidth / 2) / sd.scrollWidth
+    var y = (sd.scrollTop + sd.clientHeight / 2) / sd.scrollHeight
+
+    view.scale = new_zoom
+    var c = sd.firstChild
+    c.style.width = (W * view.scale)/devicePixelRatio + 'px'
+    c.style.height = (H * view.scale)/devicePixelRatio + 'px'
+
+    sd.scrollLeft = x * sd.scrollWidth - sd.clientWidth / 2
+    sd.scrollTop = y * sd.scrollHeight - sd.clientHeight / 2        
+}
+
+function draw_palette() {
+    var d = document.createElement('div')
+    d.style.height = innerWidth > innerHeight ? '40px' : '80px'
+
+    function drawMagnifyingGlass(c, g) {
+        g.beginPath()
+        g.moveTo(17 * dpr, 17 * dpr)
+        g.lineTo(33 * dpr, 33 * dpr)
+        g.lineWidth = 2 * dpr
+        g.strokeStyle = 'black'
+        g.stroke()
+
+		g.beginPath()
+		g.arc(17.5 * dpr, 17.5 * dpr, 10 * dpr, 0, 2*Math.PI)
+		g.fillStyle = 'lightblue'
+		g.fill()
+        g.strokeStyle = 'black'
+		g.stroke()
+    }
+
+    createZoomInButton()
+    function createZoomInButton() {
+        var b = document.createElement('div')
+        b.style.background = 'white'
+        b.style.display = 'inline-block'
+        b.style.width = '40px'
+        b.style.height = '40px'
+        b.onclick = () => set_zoom(view.scale * 2)
+
+        var c = document.createElement('canvas')
+        c.width = 40 * dpr
+        c.height = 40 * dpr
+        c.style.width = '40px'
+        c.style.height = '40px'
+        var g = c.getContext('2d')
+
+        drawMagnifyingGlass(c, g)
+
+		g.fillStyle = 'black'
+		g.fillRect(12 * dpr, 16 * dpr, 11 * dpr, 3 * dpr)
+		g.fillRect(16 * dpr, 12 * dpr, 3 * dpr, 11 * dpr)
+
+        b.append(c)
+        d.append(b)
+    }
+    
+    createZoomOutButton()
+    function createZoomOutButton() {
+        var b = document.createElement('div')
+        b.style.background = 'white'
+        b.style.display = 'inline-block'
+        b.style.width = '40px'
+        b.style.height = '40px'
+        b.onclick = () => set_zoom(view.scale / 2)
+
+        var c = document.createElement('canvas')
+        c.width = 40 * dpr
+        c.height = 40 * dpr
+        c.style.width = '40px'
+        c.style.height = '40px'
+        var g = c.getContext('2d')
+
+        drawMagnifyingGlass(c, g)
+
+		g.fillStyle = 'black'
+		g.fillRect(12 * dpr, 16 * dpr, 11 * dpr, 3 * dpr)
+
+        b.append(c)
+        d.append(b)
+    }
+
+    createSpeedSlider()
+    function createSpeedSlider() {
+        var x = make_html(`<input style="margin:0px;height:40px" type="range" min="0" max="100" value="90" step="1"></input>`)
+        x.value = view.speed * (1*x.max)
+        x.oninput = () => view.speed = (1*x.value) / (1*x.max)
+        d.append(x)
+    }
+
+    var last_save_url = null
+    function createSaveButton() {
+        var b = document.createElement('div')
+        b.style.background = 'white'
+        b.style.display = 'inline-block'
+        b.style.width = '40px'
+        b.style.height = '40px'
+
+        var cc = document.createElement('canvas')
+        cc.width = 40 * dpr
+        cc.height = 40 * dpr
+        cc.style.width = '40px'
+        cc.style.height = '40px'
+        var g = cc.getContext('2d')
+
+        g.fillStyle = 'black'
+        g.beginPath()
+        g.moveTo(10 * dpr, 20 * dpr)
+        g.lineTo(30 * dpr, 20 * dpr)
+        g.lineTo(20 * dpr, 30 * dpr)
+        g.fill()
+        g.fillRect(18 * dpr, 10 * dpr, 4 * dpr, 10 * dpr)
+        g.fillRect(10 * dpr, 29 * dpr, 20 * dpr, 1 * dpr)
+
+        b.onclick = function () {
+            gl.bindTexture(gl.TEXTURE_2D, targetTexture)
+            gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+            gl.useProgram(program)
+            gl.uniform4f(u_red_box, 0, 0, -1, -1)
+            gl.drawArrays(gl.TRIANGLES, 0, 3)
+
+            var a = make_html(`<a></a>`)
+            a.setAttribute('href', c.toDataURL())
+            a.setAttribute('download', 'chip.png')
+            a.style.display = 'none'
+            document.body.appendChild(a)
+            a.click()
+            document.body.removeChild(a)
+        }
+
+        b.append(cc)
+        d.append(b)
+    }
+    createSaveButton()
+
+    function createUploadButton() {
+        var b = document.createElement('div')
+        b.style.background = 'white'
+        b.style.display = 'inline-block'
+        b.style.width = '40px'
+        b.style.height = '40px'
+
+        var c = document.createElement('canvas')
+        c.width = 40 * dpr
+        c.height = 40 * dpr
+        c.style.width = '40px'
+        c.style.height = '40px'
+        var g = c.getContext('2d')
+
+        g.fillStyle = 'black'
+        g.beginPath()
+        g.moveTo(10 * dpr, 20 * dpr)
+        g.lineTo(30 * dpr, 20 * dpr)
+        g.lineTo(20 * dpr, 10 * dpr)
+        g.fill()
+        g.fillRect(18 * dpr, 20 * dpr, 4 * dpr, 10 * dpr)
+        g.fillRect(10 * dpr, 10 * dpr, 20 * dpr, 1 * dpr)
+
+        b.onclick = function () {
+            var inp = document.createElement('input')
+            inp.setAttribute('type', 'file')
+            inp.onchange = async function () {
+                if (this.files.length == 1) {
+                    var r = new FileReader()
+                    var e = await new Promise(done => {
+                        r.onload = done
+                        r.readAsDataURL(this.files[0])
+                    })
+                    await load_img(r.result)
+                }
+                document.body.removeChild(inp)
+            }
+            inp.style.display = 'none'
+            document.body.append(inp)
+            inp.click()
+        }
+
+        b.append(c)
+        d.append(b)
+    }
+    createUploadButton()
+
+    function createPowerResetButton() {
+        var b = document.createElement('div')
+        b.style.background = 'white'
+        b.style.display = 'inline-block'
+        b.style.width = '40px'
+        b.style.height = '40px'
+
+        var c = document.createElement('canvas')
+        c.width = 40 * dpr
+        c.height = 40 * dpr
+        c.style.width = '40px'
+        c.style.height = '40px'
+        var g = c.getContext('2d')
+
+        g.strokeStyle = 'black'
+        g.beginPath()
+        g.lineWidth = 3 * dpr
+        g.arc(20 * dpr, 20 * dpr, 8 * dpr, 3/4*tau + 1/10*tau, 3/4*tau - 1/10*tau)
+        g.moveTo(20 * dpr, 10 * dpr)
+        g.lineTo(20 * dpr, 19 * dpr)
+        g.lineCap = 'round'
+        g.stroke()
+
+        b.onclick = function () {
+            draw_on_chip(f => {
+                for (var i = 1; i < f.length; i += 4) if (f[i - 1] != things.toggle.code && f[i - 1] != things.small_toggle.code) f[i] = 0
+            })
+        }
+
+        b.append(c)
+        d.append(b)
+    }
+    createPowerResetButton()
+
+    var radio_buttons = {}
+    
+    function create_radio_button(drawOn, drawOff, brush, clickRightAway) {
+        var b = document.createElement('div')
+        b.style.display = 'inline-block'
+        b.style.width = '40px'
+        b.style.height = '40px'
+
+        var c = document.createElement('canvas')
+        c.width = 40
+        c.height = 40
+        c.style['image-rendering'] = 'pixelated'
+        var g = c.getContext('2d')
+        b.append(c)
+
+        b.onclick = function () {
+            view.brush = brush
+            each(radio_buttons, function (x, k) {
+            	if (k != brush) x.drawOff(x.c, x.g)
+            })
+            drawOn(c, g)
+        }
+
+        radio_buttons[brush] = { c : c, g : g, drawOff : drawOff }
+        if (clickRightAway) b.onclick()
+        d.append(b)
+    }
+
+    function do_unselected_background(g) {
+        // g.fillStyle = 'rgb(0, 40, 0)'
+        g.fillStyle = 'rgb(255, 255, 255)'
+        g.fillRect(0, 0, 40, 40)
+    }
+    
+    create_radio_button(function (c, g) {
+    	g.fillStyle = 'rgb(255, 255, 0)'
+    	g.fillRect(0, 0, 40, 40)
+    	g.fillStyle = 'rgb(0, 40, 0)'
+    	g.fillRect(4, 4, 32, 32)
+
+        g.fillStyle = 'rgb(255, 255, 0)'
+    	g.fillRect(10, 18, 20, 4)
+    }, function (c, g) {
+    	do_unselected_background(g)
+
+        g.fillStyle = 'rgb(128, 128, 0)'
+    	g.fillRect(10, 18, 20, 4)
+    }, 'wire')
+    create_radio_button(function (c, g) {
+    	g.fillStyle = 'rgb(255, 255, 0)'
+    	g.fillRect(0, 0, 40, 40)
+    	g.fillStyle = 'rgb(0, 40, 0)'
+    	g.fillRect(4, 4, 32, 32)
+
+        g.fillStyle = 'rgb(255, 255, 0)'
+    	g.fillRect(10, 18, 20, 4)
+    	g.fillRect(18, 14, 4, 12)
+    	g.fillStyle = 'rgb(0, 0, 0)'
+    	g.fillRect(18, 18, 4, 4)
+    }, function (c, g) {
+    	do_unselected_background(g)
+
+        g.fillStyle = 'rgb(128, 128, 0)'
+    	g.fillRect(10, 18, 20, 4)
+    	g.fillRect(18, 14, 4, 12)
+    	g.fillStyle = 'rgb(0, 0, 0)'
+    	g.fillRect(18, 18, 4, 4)
+    }, 'cross_gate')
+    create_radio_button(function (c, g) {
+    	g.fillStyle = 'rgb(255, 255, 0)'
+    	g.fillRect(0, 0, 40, 40)
+    	g.fillStyle = 'rgb(0, 40, 0)'
+    	g.fillRect(4, 4, 32, 32)
+        g.fillStyle = 'rgb(255, 128, 0)'
+        g.fillRect(14, 14, 12, 12)
+        g.fillStyle = 'rgb(255, 255, 0)'
+        g.fillRect(10, 14, 4, 4)
+        g.fillRect(26, 18, 4, 4)
+        g.fillStyle = 'rgb(80, 80, 0)'
+        g.fillRect(10, 22, 4, 4)
+    }, function (c, g) {
+    	do_unselected_background(g)
+
+        g.fillStyle = 'rgb(128, 64, 0)'
+        g.fillRect(14, 14, 12, 12)
+        g.fillStyle = 'rgb(80, 80, 0)'
+        g.fillRect(10, 14, 4, 4)
+        g.fillRect(26, 18, 4, 4)
+        g.fillRect(10, 22, 4, 4)
+    }, 'or_gate')
+    create_radio_button(function (c, g) {
+    	g.fillStyle = 'rgb(255, 255, 0)'
+    	g.fillRect(0, 0, 40, 40)
+    	g.fillStyle = 'rgb(0, 40, 0)'
+    	g.fillRect(4, 4, 32, 32)
+        g.fillStyle = 'rgb(0, 0, 255)'
+        g.fillRect(14, 14, 12, 12)
+        g.fillStyle = 'rgb(255, 255, 0)'
+        g.fillRect(10, 14, 4, 4)
+        g.fillRect(26, 18, 4, 4)
+        g.fillRect(10, 22, 4, 4)
+    }, function (c, g) {
+    	do_unselected_background(g)
+
+        g.fillStyle = 'rgb(0, 0, 128)'
+        g.fillRect(14, 14, 12, 12)
+        g.fillStyle = 'rgb(80, 80, 0)'
+        g.fillRect(10, 14, 4, 4)
+        g.fillRect(26, 18, 4, 4)
+        g.fillRect(10, 22, 4, 4)
+    }, 'and_gate')
+    create_radio_button(function (c, g) {
+    	g.fillStyle = 'rgb(255, 255, 0)'
+    	g.fillRect(0, 0, 40, 40)
+    	g.fillStyle = 'rgb(0, 40, 0)'
+    	g.fillRect(4, 4, 32, 32)
+        g.fillStyle = 'rgb(255, 0, 255)'
+        g.fillRect(14, 14, 12, 12)
+        g.fillStyle = 'rgb(255, 255, 0)'
+        g.fillRect(26, 18, 4, 4)
+        g.fillStyle = 'rgb(80, 80, 0)'
+        g.fillRect(10, 14, 4, 4)
+        g.fillRect(10, 22, 4, 4)
+    }, function (c, g) {
+    	do_unselected_background(g)
+
+        g.fillStyle = 'rgb(128, 0, 128)'
+        g.fillRect(14, 14, 12, 12)
+        g.fillStyle = 'rgb(255, 255, 0)'
+        g.fillRect(10, 14, 4, 4)
+        g.fillRect(10, 22, 4, 4)
+        g.fillStyle = 'rgb(80, 80, 0)'
+        g.fillRect(26, 18, 4, 4)
+    }, 'nand_gate')
+    create_radio_button(function (c, g) {
+    	g.fillStyle = 'rgb(255, 255, 0)'
+    	g.fillRect(0, 0, 40, 40)
+    	g.fillStyle = 'rgb(0, 40, 0)'
+    	g.fillRect(4, 4, 32, 32)
+
+        g.fillStyle = 'rgb(0, 255, 255)'
+        g.fillRect(14, 14, 12, 12)
+        g.fillStyle = 'rgb(255, 255, 0)'
+        g.fillRect(26, 18, 4, 4)
+    }, function (c, g) {
+    	do_unselected_background(g)
+
+        g.fillStyle = 'rgb(0, 128, 128)'
+        g.fillRect(14, 14, 12, 12)
+        g.fillStyle = 'rgb(80, 80, 0)'
+        g.fillRect(26, 18, 4, 4)
+    }, 'toggle')
+    create_radio_button(function (c, g) {
+        g.fillStyle = 'rgb(255, 255, 0)'
+        g.fillRect(0, 0, 40, 40)
+        g.fillStyle = 'rgb(0, 40, 0)'
+        g.fillRect(4, 4, 32, 32)
+
+        g.fillStyle = 'rgb(0, 255, 255)'
+        g.fillRect(18, 18, 4, 4)
+        g.fillStyle = 'rgb(255, 255, 0)'
+        g.fillRect(22, 18, 8, 4)
+    }, function (c, g) {
+    	do_unselected_background(g)
+
+        g.fillStyle = 'rgb(0, 128, 128)'
+        g.fillRect(18, 18, 4, 4)
+        g.fillStyle = 'rgb(80, 80, 0)'
+        g.fillRect(22, 18, 8, 4)
+    }, 'small_toggle')
+    create_radio_button(function (c, g) {
+    	g.fillStyle = 'rgb(255, 255, 0)'
+    	g.fillRect(0, 0, 40, 40)
+    	g.fillStyle = 'rgb(0, 40, 0)'
+    	g.fillRect(4, 4, 32, 32)
+
+    	g.beginPath()
+    	g.moveTo(10, 10)
+    	g.lineTo(30, 30)
+    	g.moveTo(10, 30)
+    	g.lineTo(30, 10)
+    	g.lineWidth = 4
+    	g.strokeStyle = 'rgb(255, 0, 0)'
+    	g.stroke()
+    }, function (c, g) {
+    	do_unselected_background(g)
+
+    	g.beginPath()
+    	g.moveTo(10, 10)
+    	g.lineTo(30, 30)
+    	g.moveTo(10, 30)
+    	g.lineTo(30, 10)
+    	g.lineWidth = 1
+    	g.strokeStyle = 'rgb(128, 0, 0)'
+    	g.stroke()
+    }, 'delete')
+    create_radio_button(function (c, g) {
+    	g.fillStyle = 'rgb(255, 255, 0)'
+    	g.fillRect(0, 0, 40, 40)
+    	g.fillStyle = 'rgb(0, 40, 0)'
+    	g.fillRect(4, 4, 32, 32)
+
+    	g.fillStyle = 'rgb(255, 0, 0)'
+    	g.fillRect(10, 10, 20, 4)
+        g.fillRect(10, 10, 4, 20)
+        g.fillRect(10 + 20 - 4, 10, 4, 20)
+        g.fillRect(10, 10 + 20 - 4, 20, 4)
+    }, function (c, g) {
+    	do_unselected_background(g)
+
+        g.fillStyle = 'rgb(128, 0, 0)'
+        g.fillRect(10, 10, 20, 1)
+        g.fillRect(10, 10, 1, 20)
+        g.fillRect(10 + 20 - 1, 10, 1, 20)
+        g.fillRect(10, 10 + 20 - 1, 20, 1)
+    }, 'box')
+    create_radio_button(function (c, g) {
+        g.fillStyle = 'rgb(255, 255, 0)'
+        g.fillRect(0, 0, 40, 40)
+        g.fillStyle = 'rgb(0, 40, 0)'
+        g.fillRect(4, 4, 32, 32)
+
+        g.fillStyle = 'rgb(' + things.toggle.on.join(',') + ')'
+        g.fillRect(14, 6, 12, 12)
+        g.fillStyle = 'rgb(' + things.toggle.off.join(',') + ')'
+        g.fillRect(14, 22, 12, 12)
+    }, function (c, g) {
+        do_unselected_background(g)
+
+        g.fillStyle = 'rgb(' + things.toggle.off.join(',') + ')'
+        g.fillRect(14, 6, 12, 12)
+        g.fillStyle = 'rgb(' + things.toggle.off.join(',') + ')'
+        g.fillRect(14, 22, 12, 12)
+    }, 'toggle_toggle', true)
+
+    function createRotateButton() {
+        var b = document.createElement('div')
+        b.style.background = 'white'
+        b.style.display = 'inline-block'
+        b.style.width = '40px'
+        b.style.height = '40px'
+
+        var c = document.createElement('canvas')
+        c.width = 40 * dpr
+        c.height = 40 * dpr
+        c.style.width = '40px'
+        c.style.height = '40px'
+        var g = c.getContext('2d')
+
+        g.fillStyle = 'black'
+        g.font = (25 * dpr) + 'px Arial'
+        g.textAlign = 'center'
+        g.textBaseline = 'middle'
+        g.fillText('\u27F3', 20 * dpr, 20 * dpr)
+
+        b.onclick = function () {
+            draw_on_chip(f => {
+                let copy = []
+                for (let y = view.box[1]; y <= view.box[3]; y++)
+                    for (let x = view.box[0]; x <= view.box[2]; x++)
+                        for (let i = 0; i < 4; i++) {
+                            copy.push(f[x*4 + y*W*4 + i])
+                            f[x*4 + y*W*4 + i] = 0
+                        }
+
+                let w = view.box[2] - view.box[0] + 1
+                let h = view.box[3] - view.box[1] + 1
+                for (let x = view.box[0]; x < view.box[0] + h; x++)
+                    for (let y = view.box[1] + h - 1; y >= view.box[1] + h - w; y--)
+                        for (let i = 0; i < 4; i++)
+                            f[x*4 + y*W*4 + i] = 0
+
+                for (let x = view.box[0]; x < view.box[0] + h; x++)
+                    for (let y = view.box[1] + h - 1; y >= view.box[1] + h - w; y--) {
+                        if (copy[0]) {
+                            let big = things[code_to_thing[copy[0]]]?.big
+                            for (let i = 0; i < 4; i++) f[(x - (big ? 2 : 0))*4 + y*W*4 + i] = copy.shift()
+                        } else {
+                            for (let i = 0; i < 4; i++) copy.shift()                            
+                        }
+                    }
+                
+                view.box = [view.box[0], view.box[1] + h - w, view.box[0] + h - 1, view.box[1] + h - 1]
+            })
+        }
+
+        b.append(c)
+        d.append(b)
+    }
+    createRotateButton()    
+
+    function createFlipHorzButton() {
+        var b = document.createElement('div')
+        b.style.background = 'white'
+        b.style.display = 'inline-block'
+        b.style.width = '40px'
+        b.style.height = '40px'
+
+        var c = document.createElement('canvas')
+        c.width = 40 * dpr
+        c.height = 40 * dpr
+        c.style.width = '40px'
+        c.style.height = '40px'
+        var g = c.getContext('2d')
+
+        g.fillStyle = 'black'
+        g.font = (25 * dpr) + 'px Arial'
+        g.textAlign = 'center'
+        g.textBaseline = 'middle'
+        g.fillText('\u2B04', 20 * dpr, 20 * dpr)
+
+        b.onclick = function () {
+            draw_on_chip(f => {
+                let copy = []
+                for (let y = view.box[1]; y <= view.box[3]; y++)
+                    for (let x = view.box[0]; x <= view.box[2]; x++)
+                        for (let i = 0; i < 4; i++) {
+                            copy.push(f[x*4 + y*W*4 + i])
+                            f[x*4 + y*W*4 + i] = 0
+                        }
+
+                let w = view.box[2] - view.box[0] + 1
+                let h = view.box[3] - view.box[1] + 1
+                for (let y = view.box[1]; y <= view.box[3]; y++)
+                    for (let x = view.box[0] + w - 1; x >= view.box[0]; x--)
+                        for (let i = 0; i < 4; i++)
+                            f[x*4 + y*W*4 + i] = 0
+
+                for (let y = view.box[1]; y <= view.box[3]; y++)
+                    for (let x = view.box[0] + w - 1; x >= view.box[0]; x--) {
+                        if (copy[0]) {
+                            let big = things[code_to_thing[copy[0]]]?.big
+                            for (let i = 0; i < 4; i++) f[(x - (big ? 2 : 0))*4 + y*W*4 + i] = copy.shift()
+                        } else {
+                            for (let i = 0; i < 4; i++) copy.shift()                            
+                        }
+                    }
+            })
+        }
+
+        b.append(c)
+        d.append(b)
+    }
+    createFlipHorzButton()
+
+    function createFlipVertButton() {
+        var b = document.createElement('div')
+        b.style.background = 'white'
+        b.style.display = 'inline-block'
+        b.style.width = '40px'
+        b.style.height = '40px'
+
+        var c = document.createElement('canvas')
+        c.width = 40 * dpr
+        c.height = 40 * dpr
+        c.style.width = '40px'
+        c.style.height = '40px'
+        var g = c.getContext('2d')
+
+        g.fillStyle = 'black'
+        g.font = (25 * dpr) + 'px Arial'
+        g.textAlign = 'center'
+        g.textBaseline = 'middle'
+        g.fillText('\u21F3', 20 * dpr, 20 * dpr)
+
+        b.onclick = function () {
+            draw_on_chip(f => {
+                let copy = []
+                for (let y = view.box[1]; y <= view.box[3]; y++)
+                    for (let x = view.box[0]; x <= view.box[2]; x++)
+                        for (let i = 0; i < 4; i++) {
+                            copy.push(f[x*4 + y*W*4 + i])
+                            f[x*4 + y*W*4 + i] = 0
+                        }
+
+                let w = view.box[2] - view.box[0] + 1
+                let h = view.box[3] - view.box[1] + 1
+                for (let y = view.box[1] + h - 1; y >= view.box[1]; y--)
+                    for (let x = view.box[0]; x <= view.box[1]; x++)
+                        for (let i = 0; i < 4; i++)
+                            f[x*4 + y*W*4 + i] = 0
+
+                for (let y = view.box[1] + h - 1; y >= view.box[1]; y--)
+                    for (let x = view.box[0]; x <= view.box[2]; x++) {
+                        if (copy[0]) {
+                            let big = things[code_to_thing[copy[0]]]?.big
+                            for (let i = 0; i < 4; i++) f[x*4 + (y + (big ? 2 : 0))*W*4 + i] = copy.shift()
+                        } else {
+                            for (let i = 0; i < 4; i++) copy.shift()                            
+                        }
+                    }
+            })
+        }
+
+        b.append(c)
+        d.append(b)
+    }
+    createFlipVertButton()
+
+    document.addEventListener('keydown', function (e) {
+        if (view.brush == 'box' && e.keyCode == 8 && view.box && view.box.length == 4) {
+            // 8 = DELETE
+            draw_on_chip(f => {
+                for (var x = view.box[0]; x <= view.box[2]; x++)
+                    for (var y = view.box[1]; y <= view.box[3]; y++)
+                        for (var i = 0; i < 4; i++)
+                            f[x*4 + y*W*4 + i] = 0
+            })
+            dirty = true
+        }
+    })
+
+    return d
+}
+let params = (new URL(document.location)).searchParams
+if (params.get('nobar') == null) top_d.append(draw_palette())
+if (params.get('zoom') != null) set_zoom(1*params.get('zoom'))
+
+load_img('chip006.png')
+
+async function load_img(url) {
+    var im = new Image()
+    await new Promise(done => {
+        im.onload = done
+        im.src = url
+    })
+
+    var c = document.createElement('canvas')
+    c.width = im.width
+    c.height = im.height
+    var g = c.getContext('2d')
+    g.drawImage(im, 0, 0, im.width, im.height)
+    var data = g.getImageData(0, 0, im.width, im.height).data
+
+    var color_to_thing_on = {}
+    Object.entries(things).forEach(([k, v]) => color_to_thing_on[v.on.join(',')] = k)
+
+    var color_to_thing_off = {}
+    Object.entries(things).forEach(([k, v]) => color_to_thing_off[v.off.join(',')] = k)
+    
+    draw_on_chip(f => {
+        for (var y = 0; y < im.height; y++) {
+            for (var x = 0; x < im.width; x++) {
+                for (var i = 0; i < 4; i++) f[x*4 + (H - y - 1)*W*4 + i] = 0
+
+                if (data[x*4 + y*im.width*4 + 3] == 0) continue
+
+                if (data[x*4 + y*im.width*4 + 0] == 0 && data[x*4 + y*im.width*4 + 1] == 0 && data[x*4 + y*im.width*4 + 2] == 0) {
+                    f[x*4 + (H - y - 1)*W*4 + 0] = things.cross_gate.code
+                } else if (data[x*4 + y*im.width*4 + 0] != 0 && data[x*4 + y*im.width*4 + 0] == data[x*4 + y*im.width*4 + 1]) {
+
+                    f[x*4 + (H - y - 1)*W*4 + 0] = things.wire.code
+                    f[x*4 + (H - y - 1)*W*4 + 1] = data[x*4 + y*im.width*4 + 0] == 255 ? 255 : 0
+                    f[x*4 + (H - y - 1)*W*4 + 2] = (data[x*4 + y*im.width*4 + 2] || (data[x*4 + y*im.width*4 + 0] < 255 && data[x*4 + y*im.width*4 + 0] >= 128)) ? 255 : 0
+                } else {
+                    var color = [data[x*4 + y*im.width*4 + 0], data[x*4 + y*im.width*4 + 1], data[x*4 + y*im.width*4 + 2]]
+
+                    // work here
+                    // if (color[0] == 0 && color[1] == 0 && color[2] == 255) {
+                    //     color = [255, 0, 0]
+                    // }
+                    // if (color[0] == 0 && color[1] == 0 && color[2] == 128) {
+                    //     color = [128, 0, 0]
+                    // }
+
+                    var thing = color_to_thing_on[color.join(',')]
+                    if (thing) {
+                        f[x*4 + (H - y - 1)*W*4 + 0] = things[thing].code
+                        f[x*4 + (H - y - 1)*W*4 + 1] = 255
+                        f[x*4 + (H - y - 1)*W*4 + 3] = thing.big ? 255 : 0
+                    }
+
+                    var thing = color_to_thing_off[color.join(',')]
+                    if (thing) {
+                        f[x*4 + (H - y - 1)*W*4 + 0] = things[thing].code
+                        f[x*4 + (H - y - 1)*W*4 + 1] = 0
+                        f[x*4 + (H - y - 1)*W*4 + 3] = thing.big ? 255 : 0
+                    }
+                }
+            }
+        }
+
+        for (var y = 0; y < im.height; y++) {
+            for (var x = 0; x < im.width; x++) {
+                let thing = code_to_thing[f[x*4 + (H - y - 1)*W*4 + 0]]
+                if (things[thing]?.big) {
+                    for (var dy = 0; dy < 3; dy++)
+                        for (var dx = 0; dx < 3; dx++)
+                            if (dx > 0 || dy > 0)
+                                for (var i = 0; i < 4; i++)
+                                    f[(x + dx)*4 + (H - (y + dy) - 1)*W*4 + i] = 0
+                }
+            }
+        }                        
+    })
+}
+
+
+c.onclick = function (e) {
+    my_on_mouse_up(getRelPos(c, e), e)
+}
+
+function draw_on_chip(cb) {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fb2)
+    gl.readPixels(0, 0, gl.canvas.width, gl.canvas.height, gl.RGBA, gl.UNSIGNED_BYTE, f)
+
+    cb(f)
+
+    gl.activeTexture(gl.TEXTURE0)
+    gl.bindTexture(gl.TEXTURE_2D, targetTexture)
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, W, H, 0, gl.RGBA, gl.UNSIGNED_BYTE, f)
+
+    dirty = true
+}
+
+function my_on_mouse_up(pos, e) {
+    var scrollable_div = bottom_d
+    pos.x += scrollable_div.scrollLeft
+    pos.y += scrollable_div.scrollTop
+
+    var x = Math.floor(pos.x * devicePixelRatio / view.scale)
+    var y = H - Math.floor(pos.y * devicePixelRatio / view.scale) - 1
+
+    if (view.brush == 'toggle_toggle') {
+        draw_on_chip(f => {
+            for (var dy = 0; dy <= 2; dy++) {
+                for (var dx = -2; dx <= 0; dx++) {
+                    let thing = code_to_thing[f[(x + dx) * 4 + (y + dy) * W * 4]]
+                    if (thing == 'toggle' || thing == 'small_toggle') {
+                        f[(x + dx) * 4 + (y + dy) * W * 4 + 1] = f[(x + dx) * 4 + (y + dy) * W * 4 + 1] > 0 ? 0 : 255
+                    }
+                }
+            }
+        })
+    } else if (view.brush == 'box') {
+        draw_on_chip(f => {
+            if (e.shiftKey && view.box && view.box.length == 4) {
+                draw_on_chip(f => {
+                    if (e.metaKey) {
+                        for (let x = view.box[0]; x <= view.box[2]; x++)
+                            for (let y = view.box[1]; y <= view.box[3]; y++)
+                                for (let i = 0; i < 4; i++)
+                                    f[x*4 + y*W*4 + i] = 0
+                    }
+                    view.box = [x, y - (view.box[3] - view.box[1]), view.box[2] - view.box[0] + x, y]
+
+                    var ii = 0
+                    for (let x = view.box[0]; x <= view.box[2]; x++)
+                        for (let y = view.box[1]; y <= view.box[3]; y++)
+                            for (let i = 0; i < 4; i++)
+                                f[x*4 + y*W*4 + i] = view.copy[ii++]
+                })
+            } else {
+                if (!view.box || view.box.length == 4) {
+                    view.box = [x, y]
+                } else {
+                    view.box = [
+                        Math.min(view.box[0], x),
+                        Math.min(view.box[1], y),
+                        Math.max(view.box[0], x),
+                        Math.max(view.box[1], y)
+                    ]
+                    view.copy = []
+                    draw_on_chip(f => {
+                        for (var x = view.box[0]; x <= view.box[2]; x++)
+                            for (var y = view.box[1]; y <= view.box[3]; y++)
+                                for (var i = 0; i < 4; i++)
+                                    view.copy.push(f[x*4 + y*W*4 + i])
+                    })
+                }
+            }
+        })
+    } else if (view.brush == 'delete') {
+        draw_on_chip(f => {
+            if (e.shiftKey) {
+                function delete_wires_at(x, y) {
+                    if (f[x * 4 + y * W * 4] == things.cross_gate.code) {
+                        f[x * 4 + y * W * 4 + 0] = things.wire.code
+                    } else {
+                        f[x * 4 + y * W * 4 + 0] = 0
+                        f[x * 4 + y * W * 4 + 1] = 0
+                        f[x * 4 + y * W * 4 + 2] = 0
+                        f[x * 4 + y * W * 4 + 3] = 0
+                    }
+                }
+                var dx = x - view.prev_x
+                var dy = y - view.prev_y
+                if (Math.abs(dx) > Math.abs(dy)) {
+                    if (dx > 0)
+                        for (var i = view.prev_x; i <= x; i++)
+                            delete_wires_at(i, view.prev_y)
+                    else
+                        for (var i = x; i <= view.prev_x; i++)
+                            delete_wires_at(i, view.prev_y)
+                } else {
+                    if (dy > 0)
+                        for (var i = view.prev_y; i <= y; i++)
+                            delete_wires_at(view.prev_x, i)
+                    else
+                        for (var i = y; i <= view.prev_y; i++)
+                            delete_wires_at(view.prev_x, i)
+                }
+            } else {
+                for (var dy = 0; dy <= 2; dy++) {
+                    for (var dx = -2; dx <= 0; dx++) {
+                        let thing = code_to_thing[f[(x + dx) * 4 + (y + dy) * W * 4]]
+                        if ((dx == 0 && dy == 0) || things[thing]?.big) {
+                            f[(x + dx) * 4 + (y + dy) * W * 4 + 0] = 0
+                            f[(x + dx) * 4 + (y + dy) * W * 4 + 1] = 0
+                            f[(x + dx) * 4 + (y + dy) * W * 4 + 2] = 0
+                            f[(x + dx) * 4 + (y + dy) * W * 4 + 3] = 0
+                        }
+                    }
+                }
+            }
+        })
+    } else if (view.brush == 'wire') {
+        draw_on_chip(f => {
+            function add_wire(x, y, direction) {
+                if (direction == 'horz') {
+                    if (f[x * 4 + (y + 0) * W * 4] == things.wire.code &&
+                        f[x * 4 + (y - 1) * W * 4] == things.wire.code &&
+                        f[x * 4 + (y + 1) * W * 4] == things.wire.code) {
+                        f[x * 4 + (y + 0) * W * 4 + 0] = things.cross_gate.code
+                        f[x * 4 + (y + 0) * W * 4 + 1] = 0
+                        f[x * 4 + (y + 0) * W * 4 + 2] = 0
+                        f[x * 4 + (y + 0) * W * 4 + 3] = 0
+                        return
+                    }
+                }
+                if (direction == 'vert') {
+                    if (f[(x + 0) * 4 + y * W * 4] == things.wire.code &&
+                        f[(x - 1) * 4 + y * W * 4] == things.wire.code &&
+                        f[(x + 1) * 4 + y * W * 4] == things.wire.code) {
+                        f[x * 4 + (y + 0) * W * 4 + 0] = things.cross_gate.code
+                        f[x * 4 + (y + 0) * W * 4 + 1] = 0
+                        f[x * 4 + (y + 0) * W * 4 + 2] = 0
+                        f[x * 4 + (y + 0) * W * 4 + 3] = 0
+                        return
+                    }
+                }
+                f[x * 4 + y * W * 4 + 0] = things.wire.code
+                f[x * 4 + y * W * 4 + 1] = 0
+                f[x * 4 + y * W * 4 + 2] = 0
+                f[x * 4 + y * W * 4 + 3] = 0
+            }
+            if (e.shiftKey) {
+                var dx = x - view.prev_x
+                var dy = y - view.prev_y
+                if (Math.abs(dx) > Math.abs(dy)) {
+                    y = view.prev_y
+                    if (dx > 0) {
+                        for (var i = view.prev_x; i <= x; i++)
+                            add_wire(i, y, 'horz')
+                    } else {
+                        for (var i = x; i <= view.prev_x; i++)
+                            add_wire(i, y, 'horz')
+                    }
+                } else {
+                    x = view.prev_x
+                    if (dy > 0) {
+                        for (var i = view.prev_y; i <= y; i++)
+                            add_wire(x, i, 'vert')
+                    } else {
+                        for (var i = y; i <= view.prev_y; i++)
+                            add_wire(x, i, 'vert')
+                    }
+                }
+            } else {
+                if (f[x * 4 + y * W * 4 + 0] != things.wire.code) {
+                    f[x * 4 + y * W * 4 + 0] = things.wire.code
+                    f[x * 4 + y * W * 4 + 1] = 0
+                    f[x * 4 + y * W * 4 + 2] = 0
+                    f[x * 4 + y * W * 4 + 3] = 0
+                } else {
+                    if (!f[x * 4 + y * W * 4 + 2]) f[x * 4 + y * W * 4 + 1] = f[x * 4 + y * W * 4 + 1] ? 0 : 255
+                    f[x * 4 + y * W * 4 + 2] = f[x * 4 + y * W * 4 + 2] ? 0 : 255
+                }
+            }
+        })
+    } else {
+        draw_on_chip(f => {
+            f[x * 4 + y * W * 4 + 0] = things[view.brush].code
+            f[x * 4 + y * W * 4 + 1] = 0
+            f[x * 4 + y * W * 4 + 2] = 0
+            f[x * 4 + y * W * 4 + 3] = things[view.brush].big ? 255 : 0
+        })
+    }
+    
+    view.prev_x = x
+    view.prev_y = y
+}
+
+
+
+
+
+
+
+
+
+
+function getPos(e) {
+    var x = 0, y = 0
+    while (e != null) {
+        x += e.offsetLeft
+        y += e.offsetTop
+        e = e.offsetParent
+    }
+    return {x : x, y : y}
+}
+
+function getRelPos(to, positionedObject) {
+    var pos = getPos(to)
+    return {
+        x : positionedObject.pageX - pos.x,
+        y : positionedObject.pageY - pos.y
+    }
+}
+
+function createShader(gl, type, source) {
+    var shader = gl.createShader(type)
+    gl.shaderSource(shader, source)
+    gl.compileShader(shader)
+    if (gl.getShaderParameter(shader, gl.COMPILE_STATUS)) return shader
+    console.log(gl.getShaderInfoLog(shader))
+    gl.deleteShader(shader)
+}
+
+function createProgram(gl, vertexShader, fragmentShader) {
+    var program = gl.createProgram()
+    gl.attachShader(program, vertexShader)
+    gl.attachShader(program, fragmentShader)
+    gl.linkProgram(program)
+    if (gl.getProgramParameter(program, gl.LINK_STATUS)) return program
+    console.log(gl.getProgramInfoLog(program))
+    gl.deleteProgram(program)
+}
+
+function make_html(html) {
+    var d = document.createElement('div')
+    d.innerHTML = html
+    return d.firstChild
+}
+
+function lerp(t0, v0, t1, v1, t) { return (t - t0) * (v1 - v0) / (t1 - t0) + v0 }
+function add(a, b) { return a.map((x, i) => x + b[i]) }
+function sub(a, b) { return a.map((x, i) => x - b[i]) }
+function perp(a) { return [-a[1], a[0]] }
+function lenSq(a) { return a.reduce((a, b) => a + b*b, 0) }
+function len(a) { return Math.sqrt(lenSq(a)) }
+function mul(a, b) { return a.map(x => x * b) }
+function norm(a) { return mul(a, 1/len(a)) }
+function dot(a, b) { return sum(a.map((x, i) => x * b[i])) }
+function rot(a, r) {
+    return [
+        a[0] * Math.cos(r) + a[1] * -Math.sin(r),
+        a[0] * Math.sin(r) + a[1] * Math.cos(r)]
+}
+
+</script>
