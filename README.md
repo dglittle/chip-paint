@@ -18,4 +18,11 @@ simulation. The whole simulation runs on the GPU (WebGL2).
 
 ## Run it
 
-It's one file with no dependencies. Open `index.html` in a browser.
+No dependencies: `index.html` plus `chip006.png`, the starting chip it loads.
+Serve the folder (e.g. `python3 -m http.server`) and open it in a browser.
+Opening `index.html` straight from disk won't load the starting chip, since
+browsers block reading an image's pixels from `file://`.
+
+## License
+
+MIT
