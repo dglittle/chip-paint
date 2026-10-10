@@ -2,7 +2,7 @@
 
 Paint pixels that become logic gates and wires, then watch the signals run.
 
-Live: https://bloop.monster/chip
+Live: https://dglittle.github.io/chip-paint/
 
 ## How it works
 
