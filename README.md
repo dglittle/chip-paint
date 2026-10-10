@@ -1,8 +1,8 @@
-# Chip Paint
+# Logic Paint
 
 Paint pixels that become logic gates and wires, then watch the signals run.
 
-Live: https://dglittle.github.io/chip-paint/
+Live: https://dglittle.github.io/logic-paint/
 
 ## How it works
 
