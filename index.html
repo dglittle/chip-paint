@@ -6,7 +6,7 @@
 </body>
 <script>
 
-console.log('0.0.3')
+console.log('0.0.4')
 
 var tau = Math.PI * 2
 
@@ -566,6 +566,7 @@ function draw_palette() {
 
         radio_buttons[brush] = { c : c, g : g, drawOff : drawOff }
         if (clickRightAway) b.onclick()
+        else drawOff(c, g)
         d.append(b)
     }
 
@@ -775,6 +776,28 @@ function draw_palette() {
         g.fillStyle = 'rgb(' + things.toggle.off.join(',') + ')'
         g.fillRect(14, 22, 12, 12)
     }, 'toggle_toggle', true)
+    create_radio_button(function (c, g) {
+        g.fillStyle = 'rgb(255, 255, 0)'
+        g.fillRect(0, 0, 40, 40)
+        g.fillStyle = 'rgb(0, 40, 0)'
+        g.fillRect(4, 4, 32, 32)
+
+        g.fillStyle = 'rgb(' + things.wire.on.join(',') + ')'
+        g.fillRect(8, 12, 24, 4)
+        g.fillStyle = 'rgb(' + things.wire.off.join(',') + ')'
+        g.fillRect(8, 24, 24, 4)
+        g.fillStyle = 'rgb(255, 255, 255)'
+        g.fillRect(19, 17, 2, 6)
+    }, function (c, g) {
+        do_unselected_background(g)
+
+        g.fillStyle = 'rgb(128, 128, 0)'
+        g.fillRect(8, 12, 24, 4)
+        g.fillStyle = 'rgb(' + things.wire.off.join(',') + ')'
+        g.fillRect(8, 24, 24, 4)
+        g.fillStyle = 'rgb(0, 0, 0)'
+        g.fillRect(19, 17, 2, 6)
+    }, 'flip')
 
     function createRotateButton() {
         var b = document.createElement('div')
@@ -1074,6 +1097,23 @@ function my_on_mouse_up(pos, e) {
                     }
                 }
             }
+        })
+    } else if (view.brush == 'flip') {
+        draw_on_chip(f => {
+            // flip the wire pixel nearest the click (within 2 px); the
+            // simulation then carries the new state along the whole wire
+            let hit = null
+            for (let r = 0; r <= 2 && hit == null; r++)
+                for (let dy = -r; dy <= r && hit == null; dy++)
+                    for (let dx = -r; dx <= r && hit == null; dx++) {
+                        if (Math.max(Math.abs(dx), Math.abs(dy)) != r) continue
+                        if (x + dx < 0 || x + dx >= W || y + dy < 0 || y + dy >= H) continue
+                        let i = (x + dx) * 4 + (y + dy) * W * 4
+                        if (f[i] == things.wire.code) hit = i
+                    }
+            if (hit == null) return
+            f[hit + 1] = f[hit + 1] ? 0 : 255
+            f[hit + 2] = 255
         })
     } else if (view.brush == 'box') {
         draw_on_chip(f => {

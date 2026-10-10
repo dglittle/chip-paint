@@ -13,6 +13,11 @@ Every pixel's color is a part of the circuit:
 - **cross** (black): lets two wires cross without touching
 - **toggle** (cyan): a switch you click to flip
 
+The **flip** tool (bright wire over dim wire) flips a wire itself: click on or
+near a wire and its new state runs along the whole wire. A wire that a gate or
+toggle is driving flips back to the driver's value, so flip works best on
+loose wires, where it saves placing a toggle just to feed in a signal.
+
 Pick a brush from the toolbar and paint. The slider sets the speed of the
 simulation. The whole simulation runs on the GPU (WebGL2).
 
